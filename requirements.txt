@@ -1,0 +1,7 @@
+quart==0.19.6
+hypercorn==0.16.0
+aiohttp==3.10.5
+msgpack==1.0.8
+pyzmq==26.2.0
+uvloop==0.19.0
+vllm==0.11.0
