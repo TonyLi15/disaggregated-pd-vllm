@@ -75,8 +75,8 @@ Key knobs consumed by `scripts/disaggregated_prefill.sh`:
 1) **Start the stack**:
 ```bash
 export OPENAI_API_KEY=sk-noop
-cd scripts
-./disaggregated_prefill.sh
+cd setup
+./env_setup.sh
 ```
 
 You should see in `logs/proxy.log` lines like:
@@ -134,7 +134,7 @@ pkill -f "vllm serve .*--port 8200" || true
 pkill -f "vllm serve .*--port 8100" || true
 ```
 
-## Benchmark Usage & Results
+## Simple Benchmark Usage & Results
 
 After successfully launching the proxy/consumer/producer stack (`scripts/disaggregated_prefill.sh`), you can run the included benchmark to measure TTFT and throughput.
 
@@ -153,8 +153,93 @@ Sample output (measured on A100 80 GB, model Qwen/Qwen2.5-7B-Instruct, producer 
   per-request tokens/sec: p50=67.6  p95=73.3  mean=65.2
   total generated tokens = 8219
   wall time (whole run)   = 8.53s
-  aggregate throughput    = 964.1 tokens/sec
+  aggregate throughput    = 964.1 tokens/sec  
 ```
+
+## Benchmarking & Experiments
+
+The following is the explanation of a simple automated benchmarking workflow for evaluating the disaggregated Prefill/Decode (PD) pipeline using `bench_pd.py`.
+
+### Structure
+
+```bash
+results/
+├── bench_runs/             # Raw log and parsed CSV results
+└── figures/                # Auto-generated plots
+scripts/
+├── run_bench_vars.sh       # Main experiment runner
+├── collect_from_log.py     # Extracts metrics from log to CSV
+└── plot_bench_results.py   # Aggregates and visualizes results
+```
+
+#### 1. Run Experiments
+To sweep across different concurrency, prompt length, and max generation settings:
+
+```bash
+chmod +x scripts/run_bench_vars.sh
+./scripts/run_bench_vars.sh
+```
+
+By default, it runs the model:
+```bash
+MODEL="Qwen/Qwen2.5-7B-Instruct"
+```
+
+We will extend to adapt more models in upcoming updates.
+
+Each run will generate a log under
+```bash
+results/bench_runs/run_model_Qwen_Qwen2.5-7B-Instruct_conc4_pt64_mt128.log
+```
+
+and a parsed CSV file:
+```bash
+results/bench_runs/run_model_Qwen_Qwen2.5-7B-Instruct_conc4_pt64_mt128.csv
+```
+
+#### 2. Parse Benchmark Logs
+After each run, the logs are automatically converted into CSVs by:
+```bash
+python3 scripts/collect_from_log.py --input <log_file> --output <csv_file>
+```
+
+Each CSV contains metrics such as:
+- p50_ttft, p95_ttft, min_ttft, max_ttft
+- p50_tps, p95_tps, mean_tps
+- total_tokens, wall_time_sec, aggregate_throughput
+
+#### 3. Plot and Visualize
+To aggregate and visualize all results:
+```bash
+python3 scripts/plot_bench_results.py
+```
+
+Generated figures(Default Output):
+```bash
+results/figures/
+ ├── throughput_vs_concurrency.png
+ └── ttft_vs_prompt_tokens.png
+```
+
+You can easily modify the plotting script to compare models, prompt sizes, or concurrency levels.
+
+#### 4. Example Workflow
+```bash
+# Run a full sweep
+./scripts/run_bench_vars.sh
+
+# Generate summary plots
+python3 scripts/plot_bench_results.py
+
+# Check results
+ls results/figures/
+```
+### Example Output
+
+<p align="center">
+  <img src="results/figures/throughput_vs_concurrency.png" width="70%">
+</p>
+
 
 ## To-Do
 
