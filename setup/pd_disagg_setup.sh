@@ -2,30 +2,50 @@
 set -Eeuo pipefail
 
 # ----------------------------
+# 🧹 Pre-start cleanup
+# ----------------------------
+echo "🧹 Cleaning up old PD-disagg processes and ports..."
+# Kill old proxy and vLLM instances if any
+pkill -f disagg_proxy_p2p_nccl_xpyd.py || true
+pkill -f "vllm serve" || true
+
+# Force kill any process occupying the known ports
+for PORT in 10001 8100 8200 30001 30002; do
+  PID=$(ss -ltnp 2>/dev/null | grep ":$PORT" | awk -F',' '{print $2}' | awk '{print $1}' | tr -d 'pid=' || true)
+  if [[ -n "$PID" ]]; then
+    echo "🔪 Killing process using port $PORT (pid=$PID)"
+    kill -9 "$PID" || true
+  fi
+done
+sleep 2
+echo "✅ All old processes and ports cleaned."
+
+# ----------------------------
 # User-configurable parameters
 # ----------------------------
 SRV_IP="${SRV_IP:-$(hostname -I | awk '{print $1}')}"
 MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
-CACHE_DIR="${CACHE_DIR:-$HOME/.cache/vllm}"
+CACHE_DIR="${CACHE_DIR:-/dev/shm/vllm_cache}"
 
 # Proxy (HTTP must match proxy script; ZMQ must match producer/consumer extra_config)
 PROXY_HTTP_PORT="${PROXY_HTTP_PORT:-10001}"
-PROXY_ZMQ_PORT="${PROXY_ZMQ_PORT:-30002}"
+PROXY_ZMQ_PORT="${PROXY_ZMQ_PORT:-30001}"
 
 # Consumer (decode)
 CONS_HTTP_PORT="${CONS_HTTP_PORT:-8200}"
 CONS_ZMQ_PORT="${CONS_ZMQ_PORT:-14579}"
 CONS_GPU="${CONS_GPU:-2}"
 CONS_UTIL="${CONS_UTIL:-0.8}"
-CONS_WAIT="${CONS_WAIT:-120}"
+CONS_WAIT="${CONS_WAIT:-300}"
 
-# Producer (prefill; runs SAFE mode by default)
+# Producer (prefill; SAFE mode by default)
 PROD_HTTP_PORT="${PROD_HTTP_PORT:-8100}"
 PROD_ZMQ_PORT="${PROD_ZMQ_PORT:-14580}"
 PROD_GPU="${PROD_GPU:-1}"
 PROD_UTIL="${PROD_UTIL:-0.8}"
-PROD_WAIT="${PROD_WAIT:-120}"
+PROD_WAIT="${PROD_WAIT:-300}"
 
+# OpenAI-like auth expected by proxy
 OPENAI_API_KEY="${OPENAI_API_KEY:-sk-noop}"
 
 # ----------------------------
@@ -34,6 +54,10 @@ OPENAI_API_KEY="${OPENAI_API_KEY:-sk-noop}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT_DIR/logs"
 mkdir -p "$LOG_DIR"
+
+# Force vLLM (and any framework logger) to write under repo logs/
+export VLLM_LOGGING_DIR="$LOG_DIR"
+export PYTHONUNBUFFERED=1
 
 die(){ echo "❌ $*" >&2; exit 1; }
 note(){ echo "▶ $*"; }
@@ -84,6 +108,7 @@ JSON
 # ----------------------------
 need vllm
 need python
+need ss
 [[ -n "$OPENAI_API_KEY" ]] || die "Set OPENAI_API_KEY."
 
 note "SRV_IP=${SRV_IP}"
@@ -97,7 +122,7 @@ for p in "$PROXY_HTTP_PORT" "$PROXY_ZMQ_PORT" "$CONS_HTTP_PORT" "$CONS_ZMQ_PORT"
 done
 
 # ----------------------------
-# Cleanup on any failure/exit
+# Cleanup on failure/interrupt
 # ----------------------------
 P_PROXY=""
 P_CONS=""
@@ -105,15 +130,8 @@ P_PROD=""
 
 cleanup() {
   echo "❗ failure detected. cleaning up…"
-  if [[ -n "$P_PROXY" ]] && kill -0 "$P_PROXY" 2>/dev/null; then
-    echo "🧹 stopping proxy (pid=$P_PROXY)"; kill "$P_PROXY" || true
-  fi
-  if [[ -n "$P_CONS" ]] && kill -0 "$P_CONS" 2>/dev/null; then
-    echo "🧹 stopping consumer (pid=$P_CONS)"; kill "$P_CONS" || true
-  fi
-  if [[ -n "$P_PROD" ]] && kill -0 "$P_PROD" 2>/dev/null; then
-    echo "🧹 stopping producer (pid=$P_PROD)"; kill "$P_PROD" || true
-  fi
+  pkill -f disagg_proxy_p2p_nccl_xpyd.py || true
+  pkill -f "vllm serve" || true
 }
 trap cleanup ERR INT
 
@@ -121,58 +139,54 @@ trap cleanup ERR INT
 # 1) Proxy
 # ----------------------------
 PROXY_LOG="$LOG_DIR/proxy.log"
-echo "" > "$PROXY_LOG"
+: > "$PROXY_LOG"
 
 echo "🚀 Launch: Proxy (Quart) on HTTP:${PROXY_HTTP_PORT} ZMQ:${PROXY_ZMQ_PORT}"
 (
   cd "$ROOT_DIR/proxy"
-  # Run with python directly; logs go to file.
   nohup python disagg_proxy_p2p_nccl_xpyd.py > "$PROXY_LOG" 2>&1 &
-  P_PROXY=$!
-  echo "$P_PROXY" > "$LOG_DIR/.pid.proxy"
+  echo $! > "$LOG_DIR/.pid.proxy"
 )
-# Wait for port
+P_PROXY=$(cat "$LOG_DIR/.pid.proxy")
 wait_tcp "$PROXY_HTTP_PORT" 20 || die "Proxy did not open HTTP :$PROXY_HTTP_PORT"
-echo "  ↳ proxy pid=$(cat "$LOG_DIR/.pid.proxy") ($PROXY_LOG)"
+echo "  ↳ proxy pid=$P_PROXY ($PROXY_LOG)"
 echo "✅ Proxy ready"
 
 # ----------------------------
 # 2) Consumer (Decode)
 # ----------------------------
 CONS_LOG="$LOG_DIR/consumer.log"
-echo "" > "$CONS_LOG"
+: > "$CONS_LOG"
 
 echo "🚀 Launch: Consumer (decode) @ GPU${CONS_GPU}"
-env CUDA_VISIBLE_DEVICES="${CONS_GPU}" \
-nohup vllm serve "$MODEL" \
-  --port "$CONS_HTTP_PORT" \
-  --download-dir "$CACHE_DIR" \
-  --gpu-memory-utilization "$CONS_UTIL" \
-  --max-model-len 2048 \
-  --kv-transfer-config "$(kv_json "kv_consumer" "$CONS_HTTP_PORT" "$CONS_ZMQ_PORT")" \
-  >> "$CONS_LOG" 2>&1 &
-P_CONS=$!
-echo "$P_CONS" > "$LOG_DIR/.pid.consumer"
-echo "  ↳ consumer pid=$P_CONS ($CONS_LOG)"
-
-# Wait short first; if the process dies early, bail fast
+(
+  cd "$ROOT_DIR"
+  env CUDA_VISIBLE_DEVICES="${CONS_GPU}" \
+  nohup vllm serve "$MODEL" \
+    --port "$CONS_HTTP_PORT" \
+    --download-dir "$CACHE_DIR" \
+    --gpu-memory-utilization "$CONS_UTIL" \
+    --max-model-len 32768 \
+    --kv-transfer-config "$(kv_json "kv_consumer" "$CONS_HTTP_PORT" "$CONS_ZMQ_PORT")" \
+    >> "$CONS_LOG" 2>&1 &
+  echo $! > "$LOG_DIR/.pid.consumer"
+)
+P_CONS=$(cat "$LOG_DIR/.pid.consumer")
 sleep 3
-if ! kill -0 "$P_CONS" 2>/dev/null; then
-  die "Consumer exited early; check $CONS_LOG"
-fi
-if ! wait_tcp "$CONS_HTTP_PORT" "$CONS_WAIT"; then
-  die "Timeout: consumer HTTP :$CONS_HTTP_PORT did not open"
-fi
+kill -0 "$P_CONS" 2>/dev/null || die "Consumer exited early; check $CONS_LOG"
+wait_tcp "$CONS_HTTP_PORT" "$CONS_WAIT" || die "Timeout: consumer HTTP :$CONS_HTTP_PORT did not open"
+echo "  ↳ consumer pid=$P_CONS ($CONS_LOG)"
 echo "✅ Consumer ready"
 
 # ----------------------------
 # 3) Producer (Prefill, SAFE mode)
 # ----------------------------
 PROD_LOG="$LOG_DIR/producer.log"
-echo "" > "$PROD_LOG"
+: > "$PROD_LOG"
 
 echo "🚀 Launch: Producer (prefill, SAFE: eager/No CUDA-graph) @ GPU${PROD_GPU}"
 (
+  cd "$ROOT_DIR"
   export VLLM_TORCH_COMPILE=0
   export VLLM_USE_DYNAMO=0
   export VLLM_DISABLE_CUDA_GRAPH=1
@@ -181,23 +195,17 @@ echo "🚀 Launch: Producer (prefill, SAFE: eager/No CUDA-graph) @ GPU${PROD_GPU
     --port "$PROD_HTTP_PORT" \
     --download-dir "$CACHE_DIR" \
     --gpu-memory-utilization "$PROD_UTIL" \
-    --max-model-len 2048 \
+    --max-model-len 32768 \
+	--enforce-eager \
     --kv-transfer-config "$(kv_json "kv_producer" "$PROD_HTTP_PORT" "$PROD_ZMQ_PORT")" \
-    >> "$PROD_LOG" 2>&1 &
+    >> "$PROD_LOG" 2>&1 < /dev/null &
+  echo $! > "$LOG_DIR/.pid.producer"
 )
-# Discover PID (nohup subshell)
-P_PROD=$(pgrep -n -f "vllm serve $MODEL.*--port $PROD_HTTP_PORT" || true)
-[[ -n "$P_PROD" ]] || die "Producer PID not found; check $PROD_LOG"
-echo "$P_PROD" > "$LOG_DIR/.pid.producer"
-echo "  ↳ producer pid=$P_PROD ($PROD_LOG)"
-
+P_PROD=$(cat "$LOG_DIR/.pid.producer")
 sleep 3
-if ! kill -0 "$P_PROD" 2>/dev/null; then
-  die "Producer exited early; check $PROD_LOG"
-fi
-if ! wait_tcp "$PROD_HTTP_PORT" "$PROD_WAIT"; then
-  die "Timeout: producer HTTP :$PROD_HTTP_PORT did not open"
-fi
+kill -0 "$P_PROD" 2>/dev/null || die "Producer exited early; check $PROD_LOG"
+wait_tcp "$PROD_HTTP_PORT" "$PROD_WAIT" || die "Timeout: producer HTTP :$PROD_HTTP_PORT did not open"
+echo "  ↳ producer pid=$P_PROD ($PROD_LOG)"
 echo "✅ Producer ready"
 
 # ----------------------------
@@ -217,19 +225,17 @@ HTTP_CODE=$(curl -sS -o "$LOG_DIR/.probe.out" -w "%{http_code}" \
   "http://${SRV_IP}:${PROXY_HTTP_PORT}/v1/chat/completions" || true)
 
 if [[ "$HTTP_CODE" != "200" ]]; then
-  cat "$LOG_DIR/.probe.out"
-  echo
   echo "❌ end-to-end failed (HTTP $HTTP_CODE)"
-  echo "  - $PROXY_LOG"
-  echo "  - $CONS_LOG"
-  echo "  - $PROD_LOG"
+  echo "  ↳ Inspect logs:"
+  echo "    - $PROXY_LOG"
+  echo "    - $CONS_LOG"
+  echo "    - $PROD_LOG"
+  echo "--- proxy probe output ---"
+  cat "$LOG_DIR/.probe.out" || true
   exit 2
 fi
 
 echo "✅ end-to-end OK"
 cat "$LOG_DIR/.probe.out"
 echo
-
-# Success: remove traps so processes keep running
-trap - ERR INT
-echo "ℹ To stop: kill \$(cat logs/.pid.*) or run pkill lines in README."
+echo "ℹ To stop: kill \$(cat logs/.pid.proxy) \$(cat logs/.pid.consumer) \$(cat logs/.pid.producer)"

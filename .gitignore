@@ -11,7 +11,7 @@ venv/
 
 # Benchmark results
 results/bench_runs/
-# results/figures/
+results/figures/
 *.log
 *.csv
 
@@ -32,3 +32,9 @@ results/bench_runs/
 
 # OS metadata
 Thumbs.db
+
+# Logs
+logs/
+
+# Deprecated files
+*_prev.py

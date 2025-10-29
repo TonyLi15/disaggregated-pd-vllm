@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Simple TTFT & throughput benchmark against the proxy.
+# Simple TTFT & throughput benchmark (proxy OR aggregated).
+# Added: --url (e.g., --url http://127.0.0.1:9000/v1/chat/completions)
 
 import asyncio, aiohttp, time, json, statistics as st, os, argparse, random, string
 
@@ -48,7 +49,11 @@ async def throughput_one(session, url, headers, model, prompt, max_tokens):
     return comp, dur, 200, None
 
 async def run(args):
-    base = f"http://{args.host}:{args.port}/v1/chat/completions"
+    if args.url:
+        base = args.url.rstrip("/")
+    else:
+        base = f"http://{args.host}:{args.port}/v1/chat/completions"
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY','sk-noop')}",
@@ -111,6 +116,7 @@ async def run(args):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
+    ap.add_argument("--url", default=None, help="Full endpoint. If set, overrides --host/--port (e.g. http://127.0.0.1:9000/v1/chat/completions)")
     ap.add_argument("--host", default=os.getenv("SRV_IP","127.0.0.1"))
     ap.add_argument("--port", type=int, default=int(os.getenv("PROXY_HTTP_PORT","10001")))
     ap.add_argument("--model", default=os.getenv("MODEL","Qwen/Qwen2.5-7B-Instruct"))
