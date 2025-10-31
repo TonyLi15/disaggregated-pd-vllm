@@ -12,10 +12,10 @@ MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 
 # Optional: print where we’re running from
 echo "🚀 Running aggregated bench against http://${SRV_IP}:${AGG_HTTP_PORT} (model=${MODEL})"
-echo "📄 bench.py = ${SCRIPT_DIR}/bench.py"
+echo "📄 bench_pd.py = ${SCRIPT_DIR}/bench_pd.py"
 
-# Hand through any extra CLI args to bench.py (e.g., --requests, --concurrency, etc.)
-python3 "${SCRIPT_DIR}/bench.py" \
+# Hand through any extra CLI args to bench_pd.py (e.g., --requests, --concurrency, etc.)
+python3 "${SCRIPT_DIR}/bench_pd.py" \
   --host "${SRV_IP}" \
   --port "${AGG_HTTP_PORT}" \
   --model "${MODEL}" \

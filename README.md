@@ -6,12 +6,12 @@ This repository provides a **complete testbed** for both **disaggregated** (Pref
 
 ## Overview
 
-### ✅ Disaggregated Mode
+### Disaggregated Mode
 - Separate **Prefill (Producer)** and **Decode (Consumer)** stages
 - Communication through a lightweight **Quart HTTP proxy** and **ZeroMQ** service discovery
 - Each component pinned to its own GPU for high concurrency testing
 
-### ✅ Aggregated Mode
+### Aggregated Mode
 - Standard single-server vLLM instance (prefill + decode unified)
 - Same model, dataset, and benchmarking pipeline for 1:1 comparability
 
@@ -23,20 +23,22 @@ This repository provides a **complete testbed** for both **disaggregated** (Pref
 disaggregated-pd-vllm/
 ├── proxy/                      # Proxy service (Quart + ZMQ)
 │   └── disagg_proxy_p2p_nccl_xpyd.py
-├── setup/                      # Launch scripts
+├── setup/                      
 │   ├── pd_disagg_setup.sh      # Launch Proxy → Consumer → Producer
 │   └── pd_agg_setup.sh         # Launch single aggregated vLLM
-├── bench/                      # Benchmark suite
+├── bench/                      
 │   ├── bench_pd.py             # Async benchmark (TTFT + throughput)
 │   ├── bench_proxy.sh          # Wrapper for disaggregated benchmark
 │   └── bench_agg.sh            # Wrapper for aggregated benchmark
-├── scripts/                    # Experiment automation
-│   ├── run_bench_vars.sh       # Parameter sweep (conc, pt, mt)
-│   ├── collect_from_log.py     # Parse logs → CSV
-│   └── plot_bench_results.py   # Generate figures
-└── results/
-    ├── bench_runs/             # Log + parsed CSV results
-    └── figures/                # Plots and raw figure data
+├── scripts/                    
+│   ├── run_bench_vars.sh       # 1-click Benchmark + collect + plot
+│   ├── bench_utils.py          # Shared metadata parser for filenames
+│   ├── collect_from_log.py     # Parse logs to CSV
+│   └── plot_bench_results.py   # Plot throughput/TTFT figures
+├── results/
+│   ├── bench_runs/             # Log + parsed CSV results
+│   └── figures/                # Plots and raw figure data
+└── samples/                    # Sample Figures
 ```
 
 ---
@@ -77,14 +79,14 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-### 🔹 Launch Disaggregated vLLM
+### Launch Disaggregated vLLM
 
 ```bash
 cd setup
 ./pd_disagg_setup.sh
 ```
 
-### 🔹 Launch Aggregated vLLM
+### Launch Aggregated vLLM
 
 ```bash
 cd setup
@@ -95,25 +97,50 @@ cd setup
 
 ## Benchmark Usage
 
-### 1. Run Individual Benchmark
+### 1. Quick Start: Run All Benchmarks + Figures (1-Click)
 
-```bash
-python3 bench/bench_pd.py   --host "$SRV_IP" --port 10001   --model "Qwen/Qwen2.5-7B-Instruct"   --requests 10 --concurrency 16   --prompt-tokens 256 --max-tokens 512
-```
-
-### 2. Sweep Parameter Grid
+You can run the full benchmark sweep, parse all logs, and generate all figures automatically with:
 
 ```bash
 chmod +x scripts/run_bench_vars.sh
 ./scripts/run_bench_vars.sh
 ```
+This script:
+- Benchmarks both disaggregated and aggregated setups.
+- Collects .log → .csv automatically.
+- Generates all throughput and TTFT figures under results/figures/.
 
-This automatically benchmarks **both aggregated and disaggregated** setups over:
+Default parameter grid:
 - Concurrency ∈ {1, 2, 4, 8}
-- Prompt tokens ∈ {256, 512}
-- Max tokens ∈ {512, 1024}
+- Prompt tokens ∈ {256, 512, 1024}
+- Max tokens ∈ {512, 1024, 2048}
 
-Results → `results/bench_runs/` as `.log` and `.csv` files.
+All results are stored under:
+
+```bash
+results/
+├── bench_runs/     # raw logs and parsed CSVs
+└── figures/        # generated plots and raw merged CSVs
+```
+
+Example command with custom sweep:
+```bash
+MODEL=Qwen/Qwen2.5-7B-Instruct 
+MODE_SET=both 
+REQUESTS=100 
+CONCURRENCIES=“1 2 4 8 16” 
+PROMPT_TOKENS=“256 512” 
+MAX_TOKENS=“512 1024” 
+./scripts/run_bench_vars.sh
+```
+
+### 2. Run Individual Benchmark (Manual)
+
+You can run a single benchmark manually for debugging:
+
+```bash
+python3 bench/bench_pd.py –host “$SRV_IP” –port 10001 –model “Qwen/Qwen2.5-7B-Instruct” –requests 10 –concurrency 16 –prompt-tokens 256 –max-tokens 512
+```
 
 ---
 
@@ -194,12 +221,12 @@ Each plot automatically distinguishes:
 Example outputs:
 
 <p align="center">
-  <img src="results/figures/throughput_vs_concurrency_modedisagg_pt256.png" width="70%"><br>
+  <img src="sample/throughput_vs_concurrency_modedisagg_pt256.png" width="70%"><br>
   <em>Throughput scaling vs concurrency, disaggregated mode</em>
 </p>
 
 <p align="center">
-  <img src="results/figures/ttft_vs_pt_modeagg_conc8.png" width="70%"><br>
+  <img src="sample/ttft_vs_pt_modeagg_conc8.png" width="70%"><br>
   <em>TTFT vs prompt length, aggregated mode</em>
 </p>
 
@@ -219,3 +246,26 @@ pkill -f "vllm serve .*--port 9000" || true
 ## License
 
 Apache License 2.0 — see `NOTICE.md` and `third_party_licenses/` for details.
+
+---
+
+# To-Do
+
+## 1. Multi-producer / Multi-consumer (M * N)
+
+### Goals
+- Spin up N producers (prefill) and M consumers (decode).
+- Proxy does round-robin / least-load routing for each role.
+- Health checks + auto-deregister on failure.
+
+## 2. Multi-round QA Benchmark Adaptation
+
+### Goals
+- Measure TTFT/throughput across dialogue turns with growing context (sliding or full context).
+- Report per-round TTFT, cumulative latency, tokens/sec, and memory growth.
+- https://github.com/LMCache/LMBenchmark/tree/main/real-multi-round-qa
+
+## 3. Model Switch Allowance
+
+### Goals
+- Hot-switch models with minimal proxy change; sweep multiple models in one command.
