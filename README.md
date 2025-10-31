@@ -21,24 +21,25 @@ This repository provides a **complete testbed** for both **disaggregated** (Pref
 
 ```
 disaggregated-pd-vllm/
-├── proxy/                      # Proxy service (Quart + ZMQ)
+├── proxy/                          # Proxy service (Quart + ZMQ)
 │   └── disagg_proxy_p2p_nccl_xpyd.py
 ├── setup/                      
-│   ├── pd_disagg_setup.sh      # Launch Proxy → Consumer → Producer
-│   └── pd_agg_setup.sh         # Launch single aggregated vLLM
+│   ├── pd_disagg_setup.sh          # Launch Proxy → Consumer → Producer
+│   └── pd_agg_setup.sh             # Launch single aggregated vLLM
 ├── bench/                      
-│   ├── bench_pd.py             # Async benchmark (TTFT + throughput)
-│   ├── bench_proxy.sh          # Wrapper for disaggregated benchmark
-│   └── bench_agg.sh            # Wrapper for aggregated benchmark
+│   ├── bench_pd.py                 # Async benchmark (TTFT + throughput)
+│   ├── bench_proxy.sh              # Wrapper for disaggregated benchmark
+│   └── bench_agg.sh                # Wrapper for aggregated benchmark
 ├── scripts/                    
-│   ├── run_bench_vars.sh       # 1-click Benchmark + collect + plot
-│   ├── bench_utils.py          # Shared metadata parser for filenames
-│   ├── collect_from_log.py     # Parse logs to CSV
-│   └── plot_bench_results.py   # Plot throughput/TTFT figures
+│   ├── run_bench_vars.sh           # 1-click Benchmark + collect + plot
+│   ├── bench_utils.py              # Shared metadata parser for filenames
+│   ├── collect_from_log.py         # Parse logs to CSV
+│   ├── plot_bench_results.py       # Plot throughput/TTFT figures
+│   └── plot_compare_agg_disagg.py  # Compare agg vs disagg under same settings
 ├── results/
-│   ├── bench_runs/             # Log + parsed CSV results
-│   └── figures/                # Plots and raw figure data
-└── samples/                    # Sample Figures
+│   ├── bench_runs/                 # Log + parsed CSV results
+│   └── figures/                    # Plots and raw figure data
+└── samples/                        # Sample Figures
 ```
 
 ---
@@ -232,6 +233,24 @@ Example outputs:
 
 ---
 
+## Compare Aggregated vs Disaggregated
+
+You can get a unified plotting script to directly compare agg vs disagg performance under the same experimental settings.
+
+Example Input:
+```bash
+python3 scripts/plot_compare_agg_disagg.py \
+  --mt 8192 --pt 8192 --metric p50_ttft
+```
+
+Example Output:
+<p align="center">
+  <img src="sample/compare_agg_disagg_sweep_concurrency_p50_ttft_prompt_tokens8192_max_tokens8192.png" width="70%"><br>
+  <em>Aggregated vs Disaggregated TTFT @ mt,pt = 8,192</em>
+</p>
+
+---
+
 ## Cleanup
 
 ```bash
@@ -249,7 +268,7 @@ Apache License 2.0 — see `NOTICE.md` and `third_party_licenses/` for details.
 
 ---
 
-# To-Do
+# Extension
 
 ## 1. Multi-producer / Multi-consumer (M * N)
 
@@ -269,3 +288,7 @@ Apache License 2.0 — see `NOTICE.md` and `third_party_licenses/` for details.
 
 ### Goals
 - Hot-switch models with minimal proxy change; sweep multiple models in one command.
+
+# To-Do
+
+- Disaggregate Prefiller & Decoder on 2 seperated nodes (GH200@cg1n1 & GH200@cg1n2) with router to test the performance
